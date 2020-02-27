@@ -2531,7 +2531,7 @@ Object.assign(ARjs.Context.prototype, THREE.EventDispatcher.prototype);
 // ARjs.Context.baseURL = '../'
 // default to github page
 ARjs.Context.baseURL = 'https://jeromeetienne.github.io/AR.js/three.js/'
-ARjs.Context.REVISION = '2.1.8';
+ARjs.Context.REVISION = '2.2.1';
 
 /**
  * Create a default camera for this trackingBackend
@@ -3141,20 +3141,20 @@ ARjs.Source.prototype._initSourceWebcam = function (onReady, onError) {
     navigator.mediaDevices.enumerateDevices().then(function (devices) {
         var userMediaConstraints = {
             audio: false,
-            video: {
-                facingMode: 'environment',
-                width: {
-                    ideal: _this.parameters.sourceWidth,
-                    // min: 1024,
-                    // max: 1920
-                },
-                height: {
-                    ideal: _this.parameters.sourceHeight,
-                    // min: 776,
-                    // max: 1080
-                }
-            }
+            video: true
         };
+
+        if (window.innerWidth < 800) {
+            var width = (window.innerWidth < window.innerHeight) ? 480 : 640;
+
+            userMediaConstraints = {
+                audio: false,
+                video: {
+                    facingMode: 'environment',
+                    width: { min: width, max: width }
+                },
+            };
+        }
 
         if (null !== _this.parameters.deviceId) {
             userMediaConstraints.video.deviceId = {
@@ -5597,8 +5597,19 @@ AFRAME.registerComponent('gps-camera', {
     currentCoords: null,
     lookControls: null,
     heading: null,
-
     schema: {
+        simulateLatitude: {
+            type: 'number',
+            default: 0,
+        },
+        simulateLongitude: {
+            type: 'number',
+            default: 0,
+        },
+        simulateAltitude: {
+            type: 'number',
+            default: 0,
+        },
         positionMinAccuracy: {
             type: 'int',
             default: 100,
@@ -5610,7 +5621,7 @@ AFRAME.registerComponent('gps-camera', {
         minDistance: {
             type: 'int',
             default: 0,
-        },
+        }
     },
 
     init: function () {
@@ -5651,7 +5662,7 @@ AFRAME.registerComponent('gps-camera', {
 
                 document.addEventListener('touchend', function () { handler() }, false);
 
-                alert('After camera permission prompt, please tap the screen to active geolocation.');
+                alert('After camera permission prompt, please tap the screen to activate geolocation.');
             } else {
                 var timeout = setTimeout(function () {
                     alert('Please enable device orientation in Settings > Safari > Motion & Orientation Access.')
@@ -5665,7 +5676,18 @@ AFRAME.registerComponent('gps-camera', {
         window.addEventListener(eventName, this._onDeviceOrientation, false);
 
         this._watchPositionId = this._initWatchGPS(function (position) {
-            this.currentCoords = position.coords;
+            if(this.data.simulateLatitude !== 0 && this.data.simulateLongitude !== 0) {
+                localPosition = Object.assign({}, position.coords);
+                localPosition.longitude = this.data.simulateLongitude;
+                localPosition.latitude = this.data.simulateLatitude;
+                localPosition.altitude = this.data.simulateAltitude;
+                this.currentCoords = localPosition;
+            }
+            else {
+                this.currentCoords = position.coords;
+            }
+
+
             this._updatePosition();
         }.bind(this));
     },
@@ -5816,7 +5838,7 @@ AFRAME.registerComponent('gps-camera', {
      * @param {Position} dest
      * @param {Boolean} isPlace
      *
-     * @returns {number} distance
+     * @returns {number} distance | Number.MAX_SAFE_INTEGER
      */
     computeDistanceMeters: function (src, dest, isPlace) {
         var dlongitude = THREE.Math.degToRad(dest.longitude - src.longitude);
@@ -5827,7 +5849,7 @@ AFRAME.registerComponent('gps-camera', {
         var distance = angle * 6378160;
 
         // if function has been called for a place, and if it's too near and a min distance has been set,
-        // set a very high distance to hide the object
+        // return max distance possible - to be handled by the  method caller
         if (isPlace && this.data.minDistance && this.data.minDistance > 0 && distance < this.data.minDistance) {
             return Number.MAX_SAFE_INTEGER;
         }
@@ -5918,14 +5940,14 @@ AFRAME.registerComponent('gps-camera', {
 AFRAME.registerComponent('gps-entity-place', {
     _cameraGps: null,
     schema: {
-        latitude: {
-            type: 'number',
-            default: 0,
-        },
         longitude: {
             type: 'number',
             default: 0,
         },
+        latitude: {
+            type: 'number',
+            default: 0,
+        }
     },
     init: function () {
         window.addEventListener('gps-camera-origin-coord-set', function () {
@@ -5951,7 +5973,8 @@ AFRAME.registerComponent('gps-entity-place', {
                 latitude: this.data.latitude,
             };
 
-            var distance = this._cameraGps.computeDistanceMeters(ev.detail.position, dstCoords, true);
+            // it's actually a 'distance place', but we don't call it with last param, because we want to retrieve distance even if it's < minDistance property
+            var distance = this._cameraGps.computeDistanceMeters(ev.detail.position, dstCoords);
 
             this.el.setAttribute('distance', distance);
             this.el.setAttribute('distanceMsg', formatDistance(distance));
@@ -5977,6 +6000,7 @@ AFRAME.registerComponent('gps-entity-place', {
      */
     _updatePosition: function () {
         var position = { x: 0, y: this.el.getAttribute('position').y || 0, z: 0 }
+        var hideEntity = false;
 
         // update position.x
         var dstCoords = {
@@ -5985,6 +6009,12 @@ AFRAME.registerComponent('gps-entity-place', {
         };
 
         position.x = this._cameraGps.computeDistanceMeters(this._cameraGps.originCoords, dstCoords, true);
+
+        // place has to be hide
+        if (position.x === Number.MAX_SAFE_INTEGER) {
+            hideEntity = true;
+        }
+
         this._positionXDebug = position.x;
 
         position.x *= this.data.longitude > this._cameraGps.originCoords.longitude ? 1 : -1;
@@ -5996,7 +6026,23 @@ AFRAME.registerComponent('gps-entity-place', {
         };
 
         position.z = this._cameraGps.computeDistanceMeters(this._cameraGps.originCoords, dstCoords, true);
+
+        // place has to be hide
+        if (position.z === Number.MAX_SAFE_INTEGER) {
+            hideEntity = true;
+        }
+
         position.z *= this.data.latitude > this._cameraGps.originCoords.latitude ? -1 : 1;
+
+        if (position.y !== 0) {
+            position.y = position.y - this._cameraGps.originCoords.altitude;
+        }
+
+        if (hideEntity) {
+            this.el.setAttribute('visible', false);
+        } else {
+            this.el.setAttribute('visible', true);
+        }
 
         // update element's position in 3D world
         this.el.setAttribute('position', position);
